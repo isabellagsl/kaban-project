@@ -1,4 +1,18 @@
-.env
+# Dependências 
 node_modules/
-.DS_Store
+*/node_modules/
+client/node_modules/
+server/node_modules/
+
+# Arquivos de Build
 dist/
+build/
+
+# Variáveis de Ambiente 
+.env
+server/.env
+client/.env
+
+# Logs e arquivos de sistema
+*.log
+.DS_Store

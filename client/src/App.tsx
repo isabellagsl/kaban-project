@@ -1,222 +1,219 @@
 import { useState, useEffect } from 'react';
-// Importo os componentes de arrastar e soltar (o 'type DropResult'
 import { DragDropContext, Droppable, Draggable, type DropResult } from '@hello-pangea/dnd';
 import api from './api';
 
-// INTERFACES (O contrato dos dados)
+// --- Interfaces ---
 interface Card {
   _id: string;
   title: string;
 }
-
 interface Column {
   _id: string;
   title: string;
-  cardOrder: Card[]; // A coluna tem uma lista de Cards dentro dela
+  cardOrder: Card[];
 }
-
 interface Board {
   _id: string;
   title: string;
-  columnOrder: Column[]; // O Board tem uma lista de Colunas
+  columnOrder: Column[];
 }
 
 function App() {
-  // Estado principal: aqui fica o quadro completo
+  // Estados de Autenticação
+  const [token, setToken] = useState<string | null>(localStorage.getItem('kanban_token'));
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+
+  // Estados do Kanban
   const [board, setBoard] = useState<Board | null>(null);
-  // Estado de carregamento pra não mostrar tela branca pro usuário
-  const [loading, setLoading] = useState<boolean>(true);
-  
-  // Estado para controlar o que estou digitando em cada input de "Novo Card"
-  // Uso um objeto onde a chave é o ID da coluna e o valor é o texto digitado
+  const [loading, setLoading] = useState<boolean>(false); // Começa false pois depende do login
   const [newCardText, setNewCardText] = useState<{ [key: string]: string }>({});
 
-  // BUSCAR DADOS (Roda assim que abro a tela)
+  // Efeito: Quando o token muda (login/logout), tenta buscar os dados
   useEffect(() => {
-    fetchData();
-  }, []);
+    if (token) {
+      setLoading(true);
+      fetchData();
+    }
+  }, [token]);
 
+  // --- FUNÇÕES DE AUTH ---
+  const handleLoginOrRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const route = isRegistering ? '/auth/register' : '/auth/login';
+      const payload = isRegistering ? { name, email, password } : { email, password };
+      
+      const { data } = await api.post(route, payload);
+      
+      // Salva o token e atualiza o estado
+      localStorage.setItem('kanban_token', data.token);
+      setToken(data.token);
+      alert(isRegistering ? 'Cadastro realizado! Bem-vindo .' : 'Login realizado!');
+    } catch (error: any) {
+      alert(error.response?.data?.message || 'Erro na autenticação');
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('kanban_token');
+    setToken(null);
+    setBoard(null);
+  };
+
+  // --- FUNÇÕES DO KANBAN ---
   async function fetchData() {
     try {
       const { data: boards } = await api.get<Board[]>('/Boards');
-      
       if (boards.length > 0) {
-        // Pego o ID do primeiro quadro que achar
         const firstBoardId = boards[0]._id;
-        // Busco os detalhes completos (Colunas + Cards)
         const { data: fullBoard } = await api.get<Board>(`/Boards/${firstBoardId}`);
         setBoard(fullBoard);
       }
     } catch (error) {
-      console.error("Ops, erro ao buscar dados:", error);
+      console.error("Erro ao buscar dados:", error);
+
+      // Se der erro 401 (token inválido), faz logout
+      //handleLogout();
     } finally {
-      // Terminando ou não, aviso que parou de carregar
       setLoading(false);
     }
   }
 
-  //CRIAR NOVO CARD
   const handleAddCard = async (columnId: string) => {
     const title = newCardText[columnId];
-    if (!title || !board) return; // Se não tem texto, não faço nada
+    if (!title || !board) return;
 
     try {
-      // Primeiro salvo no Banco
       const { data: createdCard } = await api.post('/Cards', {
         title,
         columnId,
         boardId: board._id
       });
 
-      // Se o banco aceitou,atualiza a tela na hora (sem precisar dar F5)
-      const newBoard = structuredClone(board); // Faz uma cópia do board atual
+      const newBoard = structuredClone(board);
       const column = newBoard.columnOrder.find(col => col._id === columnId);
-      
       if (column) {
-        column.cardOrder.push(createdCard); // Adiciona o card novo na lista
-        setBoard(newBoard); // Manda o React desenhar a tela nova
+        column.cardOrder.push(createdCard);
+        setBoard(newBoard);
       }
-
-      // Limpa o campo de texto dessa coluna
       setNewCardText(prev => ({ ...prev, [columnId]: '' }));
-
     } catch (error) {
       console.error("Erro ao criar card:", error);
     }
   };
 
-  // DRAG & DROP (Com Persistência)
   const onDragEnd = async (result: DropResult) => {
     const { destination, source } = result;
-
-    // Se soltar o card fora de qualquer coluna, cancela tudo
     if (!destination) return;
-
-    // Se soltar exatamente onde já estava, não gasta processamento
-    if (
-      destination.droppableId === source.droppableId &&
-      destination.index === source.index
-    ) {
-      return;
-    }
-
+    if (destination.droppableId === source.droppableId && destination.index === source.index) return;
     if (!board) return;
 
-    // Cria uma cópia profunda do board para poder mexer à vontade sem quebrar o React
     const newBoard = structuredClone(board);
-
-    // Descobre de qual coluna saiu e pra qual coluna foi
     const startColumn = newBoard.columnOrder.find(col => col._id === source.droppableId);
     const finishColumn = newBoard.columnOrder.find(col => col._id === destination.droppableId);
 
     if (!startColumn || !finishColumn) return;
 
-    // --- CENÁRIO A: Movi o card dentro da MESMA coluna ---
     if (startColumn === finishColumn) {
       const newCardOrder = Array.from(startColumn.cardOrder);
-      
-      // 1. Tiro o card da posição antiga
       const [movedCard] = newCardOrder.splice(source.index, 1);
-      // 2. Coloco na nova posição
       newCardOrder.splice(destination.index, 0, movedCard);
-
-      // Atualizo a coluna e mostro na tela imediatamente
       startColumn.cardOrder = newCardOrder;
       setBoard(newBoard);
 
-      // Salvar no banco
       try {
-        // Extraio só os IDs para mandar pro backend
         const cardIds = newCardOrder.map(card => card._id);
-        // Chamo a rota PUT /Columns 
         await api.put(`/Columns/${startColumn._id}`, { cardOrder: cardIds });
       } catch (error) {
-        console.error("Deu erro ao salvar a ordem no banco:", error);
+        console.error("Erro ao salvar ordem:", error);
       }
-
-    } 
-    // --- CENÁRIO B: Movi o card para OUTRA coluna ---
-    else {
+    } else {
       const startCardOrder = Array.from(startColumn.cardOrder);
       const finishCardOrder = Array.from(finishColumn.cardOrder);
-
-      // 1. Tiro da coluna de origem
       const [movedCard] = startCardOrder.splice(source.index, 1);
-      // 2. Coloco na coluna de destino
       finishCardOrder.splice(destination.index, 0, movedCard);
-
-      // Atualizo as duas colunas e mostro na tela
       startColumn.cardOrder = startCardOrder;
       finishColumn.cardOrder = finishCardOrder;
       setBoard(newBoard);
 
-      // Salvar no banco(As duas colunas mudaram!)
       try {
         const startIds = startCardOrder.map(card => card._id);
         const finishIds = finishCardOrder.map(card => card._id);
-
-        // Uso Promise.all para salvar as duas ao mesmo tempo e ser mais rápido
         await Promise.all([
           api.put(`/Columns/${startColumn._id}`, { cardOrder: startIds }),
           api.put(`/Columns/${finishColumn._id}`, { cardOrder: finishIds })
         ]);
       } catch (error) {
-        console.error("Deu erro ao trocar de coluna no banco:", error);
+        console.error("Erro ao salvar ordem:", error);
       }
     }
   };
-//estilização
-  if (loading) return <div style={{ color: 'white', padding: 20 }}>Carregando meu Kanban...</div>;
-  if (!board) return <div style={{ color: 'white', padding: 20 }}>Nenhum quadro encontrado.</div>;
+
+  // --- RENDERIZAÇÃO ---
+
+  // 1. Se não tiver token, mostra tela de Login
+  if (!token) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', flexDirection: 'column', color: 'white' }}>
+        <h1 style={{ marginBottom: 20 }}>Kanban Login</h1>
+        <form onSubmit={handleLoginOrRegister} style={{ display: 'flex', flexDirection: 'column', gap: 10, width: 300 }}>
+          {isRegistering && (
+            <input 
+              type="text" placeholder="Nome" value={name} onChange={e => setName(e.target.value)} required 
+              style={{ padding: 10, borderRadius: 5, border: 'none' }}
+            />
+          )}
+          <input 
+            type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} required 
+            style={{ padding: 10, borderRadius: 5, border: 'none' }}
+          />
+          <input 
+            type="password" placeholder="Senha" value={password} onChange={e => setPassword(e.target.value)} required 
+            style={{ padding: 10, borderRadius: 5, border: 'none' }}
+          />
+          <button type="submit" style={{ padding: 10, borderRadius: 5, border: 'none', background: '#0079bf', color: 'white', cursor: 'pointer', fontWeight: 'bold' }}>
+            {isRegistering ? 'Cadastrar' : 'Entrar'}
+          </button>
+        </form>
+        <button onClick={() => setIsRegistering(!isRegistering)} style={{ marginTop: 20, background: 'transparent', border: 'none', color: '#fff', textDecoration: 'underline', cursor: 'pointer' }}>
+          {isRegistering ? 'Já tenho conta' : 'Criar conta nova'}
+        </button>
+      </div>
+    );
+  }
+
+  // 2. Se tiver token, mostra o Kanban
+  if (loading) return <div style={{ color: 'white', padding: 20 }}>Carregando...</div>;
+  if (!board) return (
+    <div style={{ color: 'white', padding: 20 }}>
+      Nenhum quadro encontrado. 
+      <button onClick={handleLogout} style={{ marginLeft: 10 }}>Sair</button>
+    </div>
+  );
 
   return (
     <DragDropContext onDragEnd={onDragEnd}>
       <div style={{ padding: '20px', height: '100%' }}>
-        <h1 style={{ color: 'white', marginBottom: '20px' }}>{board.title}</h1>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h1 style={{ color: 'white' }}>{board.title}</h1>
+          <button onClick={handleLogout} style={{ padding: '8px 16px', background: '#eb5a46', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>Sair</button>
+        </div>
 
         <div style={{ display: 'flex', gap: '15px', alignItems: 'flex-start' }}>
           {board.columnOrder.map((column) => (
-            <div
-              key={column._id}
-              style={{
-                background: '#ebecf0',
-                borderRadius: '3px',
-                width: '280px',
-                padding: '10px',
-                display: 'flex',
-                flexDirection: 'column',
-                maxHeight: '100%'
-              }}
-            >
-              <h3 style={{ marginBottom: '10px', fontSize: '16px', fontWeight: '600' }}>
-                {column.title}
-              </h3>
-
-              {/* Área onde posso soltar os cards */}
+            <div key={column._id} style={{ background: '#ebecf0', borderRadius: '3px', width: '280px', padding: '10px', display: 'flex', flexDirection: 'column' }}>
+              <h3 style={{ marginBottom: '10px', fontSize: '16px', fontWeight: '600' }}>{column.title}</h3>
               <Droppable droppableId={column._id}>
                 {(provided) => (
-                  <div
-                    ref={provided.innerRef}
-                    {...provided.droppableProps}
-                    style={{ minHeight: '10px' }} // Altura mínima pra eu conseguir soltar algo se estiver vazio
-                  >
+                  <div ref={provided.innerRef} {...provided.droppableProps} style={{ minHeight: '10px' }}>
                     {column.cardOrder.map((card, index) => (
                       <Draggable key={card._id} draggableId={card._id} index={index}>
                         {(provided) => (
-                          <div
-                            ref={provided.innerRef}
-                            {...provided.draggableProps}
-                            {...provided.dragHandleProps}
-                            style={{
-                              background: 'white',
-                              padding: '10px',
-                              marginBottom: '8px',
-                              borderRadius: '3px',
-                              boxShadow: '0 1px 0 rgba(9,30,66,.25)',
-                              fontSize: '14px',
-                              ...provided.draggableProps.style
-                            }}
-                          >
+                          <div ref={provided.innerRef} {...provided.draggableProps} {...provided.dragHandleProps} 
+                            style={{ background: 'white', padding: '10px', marginBottom: '8px', borderRadius: '3px', boxShadow: '0 1px 0 rgba(9,30,66,.25)', fontSize: '14px', ...provided.draggableProps.style }}>
                             {card.title}
                           </div>
                         )}
@@ -226,26 +223,14 @@ function App() {
                   </div>
                 )}
               </Droppable>
-
-              {/* Input para adicionar novo card no final da coluna */}
               <div style={{ marginTop: '10px' }}>
                 <input 
-                  type="text" 
-                  placeholder="+ Add card"
-                  value={newCardText[column._id] || ''}
+                  type="text" placeholder="+ Add card" value={newCardText[column._id] || ''} 
                   onChange={(e) => setNewCardText({ ...newCardText, [column._id]: e.target.value })}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleAddCard(column._id);
-                  }}
-                  style={{
-                    width: '100%',
-                    padding: '8px',
-                    borderRadius: '3px',
-                    border: '1px solid #ccc'
-                  }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAddCard(column._id); }}
+                  style={{ width: '100%', padding: '8px', borderRadius: '3px', border: '1px solid #ccc' }}
                 />
               </div>
-
             </div>
           ))}
         </div>
